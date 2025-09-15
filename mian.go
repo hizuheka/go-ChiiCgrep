@@ -127,6 +127,13 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
       margin: 0;
       padding: 20px;
     }
+	h1 {
+      font-size: 1.5em; /* フォントサイズを小さくする */
+      margin-top: 0;
+      margin-bottom: 12px; /* 下の余白を縮小 */
+      padding-bottom: 8px; /* 区切り線との余白 */
+      border-bottom: 1px solid #ccc; /* 区切り線を追加 */
+    }
     .record {
       background-color: #fff;
       border: 1px solid #ddd;
