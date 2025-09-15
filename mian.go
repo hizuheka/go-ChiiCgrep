@@ -14,7 +14,6 @@ import (
 	"strings"
 )
 
-// Configと他の補助関数 (processFile, findCsvFiles, etc.) は変更ありません
 // Config はアプリケーションの設定を保持します。
 type Config struct {
 	InputPath    string
@@ -91,7 +90,7 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 			if idx < len(record) {
 				key := html.EscapeString(colName)
 				value := html.EscapeString(record[idx])
-				fmt.Fprintf(&sb, "  <p><span class=\"header\">%s:</span><span class=\"value\">[%s]</span></p>\n", key, value)
+				fmt.Fprintf(&sb, "  <p class=\"data-item\"><span class=\"header\">%s: </span><span class=\"value\">[%s]</span></p>\n", key, value)
 			}
 		}
 		fmt.Fprintln(&sb, "</div>")
@@ -136,12 +135,17 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
       margin-bottom: 15px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
+    .data-item {
+      margin-top: 0;
+      margin-bottom: 0;
+    }
     .file-info {
       font-size: 0.9em;
       color: #666;
       border-bottom: 1px solid #eee;
       padding-bottom: 10px;
       margin-top: 0;
+      margin-bottom: 8px;
     }
     .header {
       color: #007bff; /* Cyan/Blue */
