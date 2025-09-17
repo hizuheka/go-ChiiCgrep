@@ -35,7 +35,7 @@ type Config struct {
 func processFile(filePath string, cfg Config, writer io.Writer) error {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		return fmt.Errorf("ファイルを開けませんでした: %w", err)
 	}
 	defer file.Close()
 
@@ -47,7 +47,7 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("failed to read headers: %w", err)
+		return fmt.Errorf("ヘッダーの読み込みに失敗しました: %w", err)
 	}
 
 	headerMap := make(map[string]int, len(headers))
@@ -71,12 +71,12 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 				Emphasize: spec.Emphasize,
 			})
 		} else {
-			log.Printf("Warning: Column '%s' not found in %s", spec.Name, filePath)
+			log.Printf("警告: 列 '%s' がファイル %s に見つかりません", spec.Name, filePath)
 		}
 	}
 
 	if len(targetColumns) == 0 {
-		log.Printf("Warning: None of the specified columns found in %s. Skipping file.", filePath)
+		log.Printf("警告: 指定された列が %s に見つかりませんでした。このファイルをスキップします。", filePath)
 		return nil
 	}
 
@@ -88,7 +88,7 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 			break
 		}
 		if err != nil {
-			log.Printf("Warning: Parse error in %s at line %d: %v", filePath, lineNum, err)
+			log.Printf("警告: %s の %d行目で解析エラーが発生しました: %v", filePath, lineNum, err)
 			continue
 		}
 
@@ -107,7 +107,7 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 
 		var sb strings.Builder
 		fmt.Fprintln(&sb, "<div class=\"record\">")
-		fmt.Fprintf(&sb, "  <p class=\"file-info\">--- File: %s, Line: %d ---</p>\n", html.EscapeString(filePath), lineNum)
+		fmt.Fprintf(&sb, "  <p class=\"file-info\">--- ファイル: %s, 行: %d ---</p>\n", html.EscapeString(filePath), lineNum)
 
 		for _, col := range targetColumns {
 			idx := col.Index
@@ -124,7 +124,7 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 		fmt.Fprintln(&sb, "</div>")
 
 		if _, err := fmt.Fprint(writer, sb.String()); err != nil {
-			return fmt.Errorf("failed to write to output: %w", err)
+			return fmt.Errorf("出力への書き込みに失敗しました: %w", err)
 		}
 	}
 	return nil
@@ -132,10 +132,8 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 
 // writeHtmlHeader はHTMLのヘッダーとCSSスタイルを出力します
 func writeHtmlHeader(writer io.Writer, fontName string) {
-	// フォントが指定されている場合のみ、.valueセレクタにfont-familyスタイルを追加する
 	valueFontStyle := ""
 	if fontName != "" {
-		// CSSインジェクションを防ぐため、フォント名をエスケープする
 		escapedFontName := html.EscapeString(fontName)
 		valueFontStyle = fmt.Sprintf(`font-family: "%s", sans-serif;`, escapedFontName)
 	}
@@ -145,10 +143,9 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CSV Extract Result</title>
+  <title>CSV抽出結果</title>
   <style>
     body {
-      /* UI部分は標準的なフォントに固定 */
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       background-color: #f4f4f9;
       color: #333;
@@ -199,7 +196,7 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
   </style>
 </head>
 <body>
-  <h1>CSV Extract Result</h1>
+  <h1>CSV抽出結果</h1>
 `, valueFontStyle)
 	fmt.Fprint(writer, header)
 }
@@ -217,7 +214,7 @@ func findCsvFiles(root string, recursive bool) ([]string, error) {
 	var files []string
 	info, err := os.Stat(root)
 	if err != nil {
-		return nil, fmt.Errorf("could not stat path %s: %w", root, err)
+		return nil, fmt.Errorf("パス %s の情報を取得できませんでした: %w", root, err)
 	}
 	if !info.IsDir() {
 		if strings.HasSuffix(strings.ToLower(root), ".csv") {
@@ -236,16 +233,16 @@ func findCsvFiles(root string, recursive bool) ([]string, error) {
 	}
 	if recursive {
 		if err := filepath.WalkDir(root, walkFunc); err != nil {
-			return nil, fmt.Errorf("error walking directory %s: %w", root, err)
+			return nil, fmt.Errorf("ディレクトリ %s の探索中にエラーが発生しました: %w", root, err)
 		}
 	} else {
 		entries, err := os.ReadDir(root)
 		if err != nil {
-			return nil, fmt.Errorf("error reading directory %s: %w", root, err)
+			return nil, fmt.Errorf("ディレクトリ %s の読み込み中にエラーが発生しました: %w", root, err)
 		}
 		for _, entry := range entries {
 			if err := walkFunc(filepath.Join(root, entry.Name()), entry, nil); err != nil {
-				log.Printf("Warning: could not process entry %s: %v", entry.Name(), err)
+				log.Printf("警告: エントリ %s を処理できませんでした: %v", entry.Name(), err)
 			}
 		}
 	}
@@ -256,18 +253,18 @@ func findCsvFiles(root string, recursive bool) ([]string, error) {
 func parseFlags() Config {
 	var cfg Config
 	var columnsStr string
-	flag.StringVar(&cfg.InputPath, "in", "", "Path to the CSV file or directory.")
-	flag.StringVar(&columnsStr, "cols", "", "Comma-separated list of column names to extract. Wrap with * to emphasize (e.g., \"Name,*Email*\").")
-	flag.StringVar(&cfg.SearchTarget, "target", "", "A string to filter lines by.")
-	flag.StringVar(&cfg.OutFile, "out", "", "Path to the output HTML file (e.g., results.html).")
-	flag.StringVar(&cfg.FontName, "font", "", "Font name to apply to the value part in the HTML file (optional).")
-	flag.BoolVar(&cfg.Recursive, "r", false, "Search for CSV files recursively in subdirectories.")
-	flag.BoolVar(&cfg.AfterOpen, "after-open", false, "Open the output file after processing (requires -out).")
+	flag.StringVar(&cfg.InputPath, "in", "", "CSVファイルまたはディレクトリのパス。")
+	flag.StringVar(&columnsStr, "cols", "", "抽出する列名をカンマ区切りで指定します。*で囲むと強調表示されます (例: \"氏名,*メール*\")。")
+	flag.StringVar(&cfg.SearchTarget, "target", "", "行をフィルタリングするための文字列。")
+	flag.StringVar(&cfg.OutFile, "out", "", "出力HTMLファイルのパス (例: results.html)。")
+	flag.StringVar(&cfg.FontName, "font", "", "HTMLの値の部分に適用するフォント名 (オプション)。")
+	flag.BoolVar(&cfg.Recursive, "r", false, "サブディレクトリを再帰的に検索します。")
+	flag.BoolVar(&cfg.AfterOpen, "after-open", false, "処理後に出力ファイルを開きます (-outが必須)。")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s -in <path> -cols <col1,*col2*,...> -out <file.html> [options]\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "\nExample: go run main.go -in data -cols \"Name,*Email*\" -target 東京 -out results.html")
-		fmt.Fprintln(os.Stderr, "\nOptions:")
+		fmt.Fprintf(os.Stderr, "使用法: %s -in <パス> -cols <列1,*列2*,...> -out <ファイル.html> [オプション]\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "\n使用例: go run main.go -in data -cols \"氏名,*メール*\" -target 東京 -out results.html")
+		fmt.Fprintln(os.Stderr, "\nオプション:")
 		flag.PrintDefaults()
 	}
 
@@ -317,27 +314,27 @@ func main() {
 	if cfg.OutFile != "" {
 		outFile, err = os.Create(cfg.OutFile)
 		if err != nil {
-			log.Fatalf("Error: could not create output file %s: %v", cfg.OutFile, err)
+			log.Fatalf("エラー: 出力ファイル %s を作成できませんでした: %v", cfg.OutFile, err)
 		}
 		outputWriter = outFile
 		writeHtmlHeader(outputWriter, cfg.FontName)
 	} else {
-		log.Println("Warning: Outputting HTML to console. For best results, use the -out flag to save as an .html file.")
+		log.Println("警告: HTMLをコンソールに出力します。-outフラグで .html ファイルに保存することをお勧めします。")
 	}
 
 	files, err := findCsvFiles(cfg.InputPath, cfg.Recursive)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		log.Fatalf("エラー: %v", err)
 	}
 
 	if len(files) == 0 {
-		log.Println("No CSV files found.")
+		log.Println("CSVファイルが見つかりませんでした。")
 		return
 	}
 
 	for _, file := range files {
 		if err := processFile(file, cfg, outputWriter); err != nil {
-			log.Printf("Error processing %s: %v", file, err)
+			log.Printf("%s の処理中にエラーが発生しました: %v", file, err)
 		}
 	}
 
@@ -349,13 +346,13 @@ func main() {
 	if cfg.AfterOpen && cfg.OutFile != "" {
 		absPath, err := filepath.Abs(cfg.OutFile)
 		if err != nil {
-			log.Printf("Error: could not determine absolute path for %s: %v", cfg.OutFile, err)
+			log.Printf("エラー: %s の絶対パスを解決できませんでした: %v", cfg.OutFile, err)
 			return
 		}
 
-		fmt.Fprintf(os.Stderr, "Processing complete. Opening %s...\n", absPath)
+		fmt.Fprintf(os.Stderr, "処理が完了しました。%s を開いています...\n", absPath)
 		if err := openFile(absPath); err != nil {
-			log.Printf("Error: could not open output file %s: %v", absPath, err)
+			log.Printf("エラー: 出力ファイル %s を開けませんでした: %v", absPath, err)
 		}
 	}
 }
