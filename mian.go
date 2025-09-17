@@ -14,10 +14,16 @@ import (
 	"strings"
 )
 
-// Config はアプリケーションの設定を保持します。
+// ColumnSpec は、列名とそれが強調表示されるべきかどうかの情報を保持します。
+type ColumnSpec struct {
+	Name      string
+	Emphasize bool
+}
+
+// Config は、アプリケーションのすべての設定を保持します。
 type Config struct {
 	InputPath    string
-	Columns      []string
+	Columns      []ColumnSpec // 抽出する列の仕様
 	SearchTarget string
 	Recursive    bool
 	OutFile      string
@@ -32,8 +38,10 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
+
 	reader := csv.NewReader(bufio.NewReader(file))
 	reader.ReuseRecord = true
+
 	headers, err := reader.Read()
 	if err == io.EOF {
 		return nil
@@ -41,24 +49,37 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("failed to read headers: %w", err)
 	}
+
 	headerMap := make(map[string]int, len(headers))
 	for i, h := range headers {
 		headerMap[h] = i
 	}
-	targetIndices := make([]int, 0, len(cfg.Columns))
-	targetColumns := make([]string, 0, len(cfg.Columns))
-	for _, col := range cfg.Columns {
-		if idx, ok := headerMap[col]; ok {
-			targetIndices = append(targetIndices, idx)
-			targetColumns = append(targetColumns, col)
+
+	// 処理対象の列情報を効率的に扱うための内部構造体
+	type targetColumn struct {
+		Name      string
+		Index     int
+		Emphasize bool
+	}
+
+	var targetColumns []targetColumn
+	for _, spec := range cfg.Columns {
+		if idx, ok := headerMap[spec.Name]; ok {
+			targetColumns = append(targetColumns, targetColumn{
+				Name:      spec.Name,
+				Index:     idx,
+				Emphasize: spec.Emphasize,
+			})
 		} else {
-			log.Printf("Warning: Column '%s' not found in %s", col, filePath)
+			log.Printf("Warning: Column '%s' not found in %s", spec.Name, filePath)
 		}
 	}
-	if len(targetIndices) == 0 {
+
+	if len(targetColumns) == 0 {
 		log.Printf("Warning: None of the specified columns found in %s. Skipping file.", filePath)
 		return nil
 	}
+
 	lineNum := 1
 	for {
 		lineNum++
@@ -70,6 +91,7 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 			log.Printf("Warning: Parse error in %s at line %d: %v", filePath, lineNum, err)
 			continue
 		}
+
 		if cfg.SearchTarget != "" {
 			found := false
 			for _, cell := range record {
@@ -82,15 +104,21 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 				continue
 			}
 		}
+
 		var sb strings.Builder
 		fmt.Fprintln(&sb, "<div class=\"record\">")
 		fmt.Fprintf(&sb, "  <p class=\"file-info\">--- File: %s, Line: %d ---</p>\n", html.EscapeString(filePath), lineNum)
-		for i, colName := range targetColumns {
-			idx := targetIndices[i]
+
+		for _, col := range targetColumns {
+			idx := col.Index
 			if idx < len(record) {
-				key := html.EscapeString(colName)
+				key := html.EscapeString(col.Name)
 				value := html.EscapeString(record[idx])
-				fmt.Fprintf(&sb, "  <p class=\"data-item\"><span class=\"header\">%s: </span><span class=\"value\">[%s]</span></p>\n", key, value)
+				className := "data-item"
+				if col.Emphasize {
+					className += " emphasis" // 強調フラグがあればemphasisクラスを追加
+				}
+				fmt.Fprintf(&sb, "  <p class=\"%s\"><span class=\"header\">%s: </span><span class=\"value\">[%s]</span></p>\n", className, key, value)
 			}
 		}
 		fmt.Fprintln(&sb, "</div>")
@@ -127,12 +155,12 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
       margin: 0;
       padding: 20px;
     }
-	h1 {
-      font-size: 1.5em; /* フォントサイズを小さくする */
+    h1 {
+      font-size: 1.5em;
       margin-top: 0;
-      margin-bottom: 12px; /* 下の余白を縮小 */
-      padding-bottom: 8px; /* 区切り線との余白 */
-      border-bottom: 1px solid #ccc; /* 区切り線を追加 */
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #ccc;
     }
     .record {
       background-color: #fff;
@@ -145,6 +173,12 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
     .data-item {
       margin-top: 0;
       margin-bottom: 0;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+    .emphasis {
+      font-weight: bold;
+      background-color: #fff8c4; /* 薄い黄色のハイライト */
     }
     .file-info {
       font-size: 0.9em;
@@ -155,12 +189,11 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
       margin-bottom: 8px;
     }
     .header {
-      color: #007bff; /* Cyan/Blue */
+      color: #007bff;
       font-weight: bold;
     }
     .value {
-      color: #28a745; /* Green */
-      /* ここに、-fontで指定されたフォントスタイルが挿入される */
+      color: #28a745;
       %s
     }
   </style>
@@ -224,7 +257,7 @@ func parseFlags() Config {
 	var cfg Config
 	var columnsStr string
 	flag.StringVar(&cfg.InputPath, "in", "", "Path to the CSV file or directory.")
-	flag.StringVar(&columnsStr, "cols", "", "Comma-separated list of column names to extract.")
+	flag.StringVar(&columnsStr, "cols", "", "Comma-separated list of column names to extract. Wrap with * to emphasize (e.g., \"Name,*Email*\").")
 	flag.StringVar(&cfg.SearchTarget, "target", "", "A string to filter lines by.")
 	flag.StringVar(&cfg.OutFile, "out", "", "Path to the output HTML file (e.g., results.html).")
 	flag.StringVar(&cfg.FontName, "font", "", "Font name to apply to the value part in the HTML file (optional).")
@@ -232,8 +265,8 @@ func parseFlags() Config {
 	flag.BoolVar(&cfg.AfterOpen, "after-open", false, "Open the output file after processing (requires -out).")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s -in <path> -cols <col1,col2> -out <file.html> [options]\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "\nExample: go-ChiiCgrep.exe -in data -cols Name,Email -target 東京 -out results.html -font \"MS Mincho\" -after-open")
+		fmt.Fprintf(os.Stderr, "Usage: %s -in <path> -cols <col1,*col2*,...> -out <file.html> [options]\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "\nExample: go run main.go -in data -cols \"Name,*Email*\" -target 東京 -out results.html")
 		fmt.Fprintln(os.Stderr, "\nOptions:")
 		flag.PrintDefaults()
 	}
@@ -244,7 +277,26 @@ func parseFlags() Config {
 		flag.Usage()
 		os.Exit(1)
 	}
-	cfg.Columns = strings.Split(columnsStr, ",")
+
+	// アスタリスクで囲まれた列名を解析し、ColumnSpecスライスを作成
+	var specs []ColumnSpec
+	columns := strings.Split(columnsStr, ",")
+	for _, col := range columns {
+		trimmed := strings.TrimSpace(col)
+		if strings.HasPrefix(trimmed, "*") && strings.HasSuffix(trimmed, "*") && len(trimmed) > 1 {
+			specs = append(specs, ColumnSpec{
+				Name:      trimmed[1 : len(trimmed)-1], // アスタリスクを削除
+				Emphasize: true,
+			})
+		} else {
+			specs = append(specs, ColumnSpec{
+				Name:      trimmed,
+				Emphasize: false,
+			})
+		}
+	}
+	cfg.Columns = specs
+
 	return cfg
 }
 
