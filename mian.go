@@ -20,6 +20,21 @@ type ColumnSpec struct {
 	Emphasize bool
 }
 
+// 複数の -highlight-if 引数を保持するためのカスタム型
+type highlightConditions []string
+
+// flag.Valueインターフェースを実装するためのString()メソッド
+func (h *highlightConditions) String() string {
+	return strings.Join(*h, ", ")
+}
+
+// flag.Valueインターフェースを実装するためのSet()メソッド
+// -highlight-if が指定されるたびにこのメソッドが呼ばれる
+func (h *highlightConditions) Set(value string) error {
+	*h = append(*h, value)
+	return nil
+}
+
 // Config は、アプリケーションのすべての設定を保持します。
 type Config struct {
 	InputPath    string
@@ -29,10 +44,17 @@ type Config struct {
 	OutFile      string
 	AfterOpen    bool
 	FontName     string
+	HighlightIfs highlightConditions // stringからカスタム型へ
+}
+
+// ハイライト条件を構造化して保持するための型
+type highlightRule struct {
+	ColumnName  string
+	ColumnValue string
 }
 
 // processFile は単一のCSVファイルを処理し、HTML形式でwriterに出力します。
-func processFile(filePath string, cfg Config, writer io.Writer) error {
+func processFile(filePath string, cfg Config, writer io.Writer, rules []highlightRule) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("ファイルを開けませんでした: %w", err)
@@ -55,20 +77,29 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 		headerMap[h] = i
 	}
 
-	// 処理対象の列情報を効率的に扱うための内部構造体
+	type resolvedRule struct {
+		Index int
+		Value string
+	}
+	var resolvedRules []resolvedRule
+	for _, rule := range rules {
+		if idx, ok := headerMap[rule.ColumnName]; ok {
+			resolvedRules = append(resolvedRules, resolvedRule{Index: idx, Value: rule.ColumnValue})
+		} else {
+			log.Printf("警告: 行ハイライト条件の列 '%s' がファイル %s に見つかりません。", rule.ColumnName, filePath)
+		}
+	}
+
 	type targetColumn struct {
 		Name      string
 		Index     int
 		Emphasize bool
 	}
-
 	var targetColumns []targetColumn
 	for _, spec := range cfg.Columns {
 		if idx, ok := headerMap[spec.Name]; ok {
 			targetColumns = append(targetColumns, targetColumn{
-				Name:      spec.Name,
-				Index:     idx,
-				Emphasize: spec.Emphasize,
+				Name: spec.Name, Index: idx, Emphasize: spec.Emphasize,
 			})
 		} else {
 			log.Printf("警告: 列 '%s' がファイル %s に見つかりません", spec.Name, filePath)
@@ -105,7 +136,17 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 			}
 		}
 
+		// この行でハイライトすべき「列のインデックス」をマップに記録する
+		columnsToHighlight := make(map[int]bool)
+		for _, rule := range resolvedRules {
+			if rule.Index < len(record) && record[rule.Index] == rule.Value {
+				// 条件が一致した場合、その条件の列インデックスをハイライト対象としてマーク
+				columnsToHighlight[rule.Index] = true
+			}
+		}
+
 		var sb strings.Builder
+		// 行全体のハイライトは行わないため、クラス指定を削除
 		fmt.Fprintln(&sb, "<div class=\"record\">")
 		fmt.Fprintf(&sb, "  <p class=\"file-info\">--- ファイル: %s, 行: %d ---</p>\n", html.EscapeString(filePath), lineNum)
 
@@ -116,7 +157,11 @@ func processFile(filePath string, cfg Config, writer io.Writer) error {
 				value := html.EscapeString(record[idx])
 				className := "data-item"
 				if col.Emphasize {
-					className += " emphasis" // 強調フラグがあればemphasisクラスを追加
+					className += " emphasis"
+				}
+				// この列がハイライト対象かをマップでチェックし、クラスを追加
+				if columnsToHighlight[col.Index] {
+					className += " highlight-value"
 				}
 				fmt.Fprintf(&sb, "  <p class=\"%s\"><span class=\"header\">%s: </span><span class=\"value\">[%s]</span></p>\n", className, key, value)
 			}
@@ -145,53 +190,20 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CSV抽出結果</title>
   <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background-color: #f4f4f9;
-      color: #333;
-      margin: 0;
-      padding: 20px;
-    }
-    h1 {
-      font-size: 1.5em;
-      margin-top: 0;
-      margin-bottom: 12px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid #ccc;
-    }
-    .record {
-      background-color: #fff;
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      padding: 15px;
-      margin-bottom: 15px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .data-item {
-      margin-top: 0;
-      margin-bottom: 0;
-      padding: 2px 4px;
-      border-radius: 3px;
-    }
-    .emphasis {
-      font-weight: bold;
-      background-color: #fff8c4; /* 薄い黄色のハイライト */
-    }
-    .file-info {
-      font-size: 0.9em;
-      color: #666;
-      border-bottom: 1px solid #eee;
-      padding-bottom: 10px;
-      margin-top: 0;
-      margin-bottom: 8px;
-    }
-    .header {
-      color: #007bff;
-      font-weight: bold;
-    }
-    .value {
-      color: #28a745;
-      %s
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f4f9; color: #333; margin: 0; padding: 20px; }
+    h1 { font-size: 1.5em; margin-top: 0; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #ccc; }
+    .record { background-color: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .data-item { margin-top: 0; margin-bottom: 0; padding: 2px 4px; border-radius: 3px; }
+    .emphasis { font-weight: bold; background-color: #fff8c4; }
+    .file-info { font-size: 0.9em; color: #666; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-top: 0; margin-bottom: 8px; }
+    .header { color: #007bff; font-weight: bold; }
+    .value { color: #28a745; %s }
+    /* ★変更点3: .highlight-row を削除し、セルをハイライトする .highlight-value を追加 */
+    .highlight-value {
+      background-color: #e7f3ff; /* 薄い青色の背景 */
+      border-left: 3px solid #007bff;
+      margin-left: -7px; /* ボーダーとパディングを調整 */
+      padding-left: 4px;
     }
   </style>
 </head>
@@ -254,16 +266,18 @@ func parseFlags() Config {
 	var cfg Config
 	var columnsStr string
 	flag.StringVar(&cfg.InputPath, "in", "", "CSVファイルまたはディレクトリのパス。")
-	flag.StringVar(&columnsStr, "cols", "", "抽出する列名をカンマ区切りで指定します。*で囲むと強調表示されます (例: \"氏名,*メール*\")。")
+	flag.StringVar(&columnsStr, "cols", "", "抽出する列名をカンマ区切りで指定します。*で囲むとセルが強調されます。")
 	flag.StringVar(&cfg.SearchTarget, "target", "", "行をフィルタリングするための文字列。")
-	flag.StringVar(&cfg.OutFile, "out", "", "出力HTMLファイルのパス (例: results.html)。")
-	flag.StringVar(&cfg.FontName, "font", "", "HTMLの値の部分に適用するフォント名 (オプション)。")
+	flag.StringVar(&cfg.OutFile, "out", "", "出力HTMLファイルのパス。")
+	flag.StringVar(&cfg.FontName, "font", "", "値に適用するフォント名 (オプション)。")
+	// flag.Var を使って複数回の指定を可能にする
+	flag.Var(&cfg.HighlightIfs, "highlight-if", "行全体を強調表示する条件 (例: \"ステータス=完了\")。複数指定可能。")
 	flag.BoolVar(&cfg.Recursive, "r", false, "サブディレクトリを再帰的に検索します。")
 	flag.BoolVar(&cfg.AfterOpen, "after-open", false, "処理後に出力ファイルを開きます (-outが必須)。")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "使用法: %s -in <パス> -cols <列1,*列2*,...> -out <ファイル.html> [オプション]\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "\n使用例: go run main.go -in data -cols \"氏名,*メール*\" -target 東京 -out results.html")
+		fmt.Fprintf(os.Stderr, "使用法: %s -in <パス> -cols <...> [オプション]\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "\n使用例: go run main.go -in data -cols \"氏名,*備考*\" -highlight-if \"ステータス=重要\" -highlight-if \"優先度=高\" -out report.html")
 		fmt.Fprintln(os.Stderr, "\nオプション:")
 		flag.PrintDefaults()
 	}
@@ -282,18 +296,15 @@ func parseFlags() Config {
 		trimmed := strings.TrimSpace(col)
 		if strings.HasPrefix(trimmed, "*") && strings.HasSuffix(trimmed, "*") && len(trimmed) > 1 {
 			specs = append(specs, ColumnSpec{
-				Name:      trimmed[1 : len(trimmed)-1], // アスタリスクを削除
-				Emphasize: true,
+				Name: trimmed[1 : len(trimmed)-1], Emphasize: true,
 			})
 		} else {
 			specs = append(specs, ColumnSpec{
-				Name:      trimmed,
-				Emphasize: false,
+				Name: trimmed, Emphasize: false,
 			})
 		}
 	}
 	cfg.Columns = specs
-
 	return cfg
 }
 
@@ -306,6 +317,20 @@ func openFile(path string) error {
 func main() {
 	log.SetFlags(0)
 	cfg := parseFlags()
+
+	// 複数のハイライト条件を解析
+	var highlightRules []highlightRule
+	for _, cond := range cfg.HighlightIfs {
+		parts := strings.SplitN(cond, "=", 2)
+		if len(parts) == 2 {
+			highlightRules = append(highlightRules, highlightRule{
+				ColumnName:  strings.TrimSpace(parts[0]),
+				ColumnValue: strings.TrimSpace(parts[1]),
+			})
+		} else {
+			log.Fatalf("エラー: -highlight-if の書式が正しくありません: %s。\"列名=値\" の形式で指定してください。", cond)
+		}
+	}
 
 	var outputWriter io.Writer = os.Stdout
 	var outFile *os.File
@@ -333,7 +358,8 @@ func main() {
 	}
 
 	for _, file := range files {
-		if err := processFile(file, cfg, outputWriter); err != nil {
+		// 解析したハイライト条件のスライスをprocessFileに渡す
+		if err := processFile(file, cfg, outputWriter, highlightRules); err != nil {
 			log.Printf("%s の処理中にエラーが発生しました: %v", file, err)
 		}
 	}
