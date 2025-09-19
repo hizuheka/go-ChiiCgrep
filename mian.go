@@ -35,6 +35,15 @@ func (h *highlightConditions) Set(value string) error {
 	return nil
 }
 
+// 複数の -tag-file 引数を保持するためのカスタム型
+type fileTagConditions []string
+
+func (f *fileTagConditions) String() string { return strings.Join(*f, ", ") }
+func (f *fileTagConditions) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
 // Config は、アプリケーションのすべての設定を保持します。
 type Config struct {
 	InputPath    string
@@ -45,6 +54,7 @@ type Config struct {
 	AfterOpen    bool
 	FontName     string
 	HighlightIfs highlightConditions // stringからカスタム型へ
+	FileTags     fileTagConditions   // 追加
 }
 
 // ハイライト条件を構造化して保持するための型
@@ -53,8 +63,14 @@ type highlightRule struct {
 	ColumnValue string
 }
 
+// ファイルタグ条件を構造化して保持するための型
+type fileTagRule struct {
+	TagName string
+	Keyword string
+}
+
 // processFile は単一のCSVファイルを処理し、HTML形式でwriterに出力します。
-func processFile(filePath string, cfg Config, writer io.Writer, rules []highlightRule) error {
+func processFile(filePath string, cfg Config, writer io.Writer, rules []highlightRule, tagRules []fileTagRule) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("ファイルを開けませんでした: %w", err)
@@ -111,6 +127,15 @@ func processFile(filePath string, cfg Config, writer io.Writer, rules []highligh
 		return nil
 	}
 
+	// ファイル名に適用するタグを決定
+	fileTagClass := ""
+	for _, tagRule := range tagRules {
+		if strings.Contains(filePath, tagRule.Keyword) {
+			fileTagClass = " tag-" + html.EscapeString(tagRule.TagName)
+			break // 最初に見つかったタグを適用
+		}
+	}
+
 	lineNum := 1
 	for {
 		lineNum++
@@ -148,7 +173,8 @@ func processFile(filePath string, cfg Config, writer io.Writer, rules []highligh
 		var sb strings.Builder
 		// 行全体のハイライトは行わないため、クラス指定を削除
 		fmt.Fprintln(&sb, "<div class=\"record\">")
-		fmt.Fprintf(&sb, "  <p class=\"file-info\">--- ファイル: %s, 行: %d ---</p>\n", html.EscapeString(filePath), lineNum)
+		// file-info に決定したタグクラスを追加
+		fmt.Fprintf(&sb, "  <p class=\"file-info%s\">--- ファイル: %s, 行: %d ---</p>\n", fileTagClass, html.EscapeString(filePath), lineNum)
 
 		for _, col := range targetColumns {
 			idx := col.Index
@@ -198,13 +224,19 @@ func writeHtmlHeader(writer io.Writer, fontName string) {
     .file-info { font-size: 0.9em; color: #666; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-top: 0; margin-bottom: 8px; }
     .header { color: #007bff; font-weight: bold; }
     .value { color: #28a745; %s }
-    /* ★変更点3: .highlight-row を削除し、セルをハイライトする .highlight-value を追加 */
+    /* .highlight-row を削除し、セルをハイライトする .highlight-value を追加 */
     .highlight-value {
       background-color: #e7f3ff; /* 薄い青色の背景 */
       border-left: 3px solid #007bff;
       margin-left: -7px; /* ボーダーとパディングを調整 */
       padding-left: 4px;
     }
+	/* ファイルタグ用のスタイル */
+    .tag-important { font-weight: bold; color: #721c24; background-color: #f8d7da; border-left-color: #f5c6cb; }
+    .tag-warning { font-weight: bold; color: #856404; background-color: #fff3cd; border-left-color: #ffeeba; }
+    .tag-archived { color: #6c757d; background-color: #e2e3e5; border-left-color: #d6d8db; font-style: italic; }
+    .tag-completed { color: #155724; background-color: #d4edda; border-left-color: #c3e6cb; }
+
   </style>
 </head>
 <body>
@@ -272,12 +304,14 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.FontName, "font", "", "値に適用するフォント名 (オプション)。")
 	// flag.Var を使って複数回の指定を可能にする
 	flag.Var(&cfg.HighlightIfs, "highlight-if", "行全体を強調表示する条件 (例: \"ステータス=完了\")。複数指定可能。")
+	// 新しいフラグを定義
+	flag.Var(&cfg.FileTags, "tag-file", "ファイル名をキーワードでタグ付けし強調表示します (例: \"important:final_report\")。\n利用可能なタグ: important, warning, completed, archived。複数指定可能。")
 	flag.BoolVar(&cfg.Recursive, "r", false, "サブディレクトリを再帰的に検索します。")
 	flag.BoolVar(&cfg.AfterOpen, "after-open", false, "処理後に出力ファイルを開きます (-outが必須)。")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "使用法: %s -in <パス> -cols <...> [オプション]\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "\n使用例: go run main.go -in data -cols \"氏名,*備考*\" -highlight-if \"ステータス=重要\" -highlight-if \"優先度=高\" -out report.html")
+		fmt.Fprintln(os.Stderr, "\n使用例: go-ChiiCgrep.exe -in data -cols \"氏名\" -tag-file \"important:final\" -tag-file \"warning:error\"")
 		fmt.Fprintln(os.Stderr, "\nオプション:")
 		flag.PrintDefaults()
 	}
@@ -332,6 +366,20 @@ func main() {
 		}
 	}
 
+	// ファイルタグ条件を解析
+	var fileTagRules []fileTagRule
+	for _, tagCond := range cfg.FileTags {
+		parts := strings.SplitN(tagCond, ":", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			fileTagRules = append(fileTagRules, fileTagRule{
+				TagName: strings.TrimSpace(parts[0]),
+				Keyword: strings.TrimSpace(parts[1]),
+			})
+		} else {
+			log.Fatalf("エラー: -tag-file の書式が正しくありません: %s。\"タグ名:キーワード\" の形式で指定してください。", tagCond)
+		}
+	}
+
 	var outputWriter io.Writer = os.Stdout
 	var outFile *os.File
 	var err error
@@ -359,7 +407,7 @@ func main() {
 
 	for _, file := range files {
 		// 解析したハイライト条件のスライスをprocessFileに渡す
-		if err := processFile(file, cfg, outputWriter, highlightRules); err != nil {
+		if err := processFile(file, cfg, outputWriter, highlightRules, fileTagRules); err != nil {
 			log.Printf("%s の処理中にエラーが発生しました: %v", file, err)
 		}
 	}
